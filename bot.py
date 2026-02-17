@@ -108,8 +108,8 @@ COUNTRIES = {
     "bh": {"name": "البحرين 🇧🇭", "flag": "🇧🇭", "name_en": "Bahrain", "indeed_country": "Bahrain", "location": "Bahrain"},
 }
 
-# Expanded search sources
-SEARCH_SITES = ["indeed", "linkedin", "glassdoor", "google"]
+# Search sources (Glassdoor not available for Gulf countries)
+SEARCH_SITES = ["indeed", "linkedin", "google"]
 
 # Job Categories
 JOB_CATEGORIES = {
@@ -407,7 +407,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "1️⃣ اضغط على /start للبدء.\n"
         "2️⃣ اختر <b>بحث عن وظيفة</b> ثم اختر الدولة.\n"
         "3️⃣ اكتب المسمى الوظيفي (مثلاً: Accountant أو مهندس).\n"
-        "4️⃣ سيقوم البوت بالبحث في Indeed, LinkedIn, Glassdoor, Google.\n\n"
+        "4️⃣ سيقوم البوت بالبحث في Indeed, LinkedIn, Google Jobs.\n\n"
         "<b>الميزات الجديدة:</b>\n"
         "⭐ <b>حفظ الوظائف</b> - اضغط زر ⭐ حفظ لحفظ أي وظيفة.\n"
         "🔔 <b>التنبيهات</b> - أضف تنبيه وسنرسل لك الوظائف الجديدة تلقائياً.\n"
@@ -925,14 +925,14 @@ async def perform_search(update_or_query, context, search_term, country_code, is
     if is_callback:
         await update_or_query.edit_message_text(
             f"🔍 جاري البحث عن <b>{escape_html(search_term)}</b>... يرجى الانتظار.\n"
-            f"🌐 المصادر: Indeed, LinkedIn, Glassdoor, Google",
+            f"🌐 المصادر: Indeed, LinkedIn, Google Jobs",
             parse_mode=ParseMode.HTML,
         )
         chat_id = update_or_query.message.chat_id
     else:
         await update_or_query.message.reply_text(
             f"🔍 جاري البحث عن <b>{escape_html(search_term)}</b>... يرجى الانتظار.\n"
-            f"🌐 المصادر: Indeed, LinkedIn, Glassdoor, Google",
+            f"🌐 المصادر: Indeed, LinkedIn, Google Jobs",
             parse_mode=ParseMode.HTML,
         )
         chat_id = update_or_query.message.chat_id
