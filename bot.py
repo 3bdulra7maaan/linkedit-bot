@@ -118,8 +118,8 @@ COUNTRIES = {
     "bh": {"name": "البحرين 🇧🇭", "flag": "🇧🇭", "name_en": "Bahrain", "indeed_country": "Bahrain", "location": "Bahrain"},
 }
 
-# Search sources (Glassdoor not available for Gulf countries)
-SEARCH_SITES = ["indeed", "linkedin", "google"]
+# Search sources (Glassdoor not available for Gulf countries, Google blocks Render IPs)
+SEARCH_SITES = ["indeed", "linkedin"]
 
 # Job Categories
 JOB_CATEGORIES = {
@@ -144,6 +144,27 @@ def escape_html(text: str) -> str:
     if not text:
         return ""
     return html.escape(str(text))
+
+
+async def safe_edit_message(query, text: str, parse_mode=None, reply_markup=None, disable_web_page_preview=False):
+    """Safely edit a message, ignoring 'Message is not modified' errors."""
+    try:
+        kwargs = {"text": text}
+        if parse_mode:
+            kwargs["parse_mode"] = parse_mode
+        if reply_markup:
+            kwargs["reply_markup"] = reply_markup
+        if disable_web_page_preview:
+            kwargs["disable_web_page_preview"] = disable_web_page_preview
+        return await safe_edit_message(query,**kwargs)
+    except BadRequest as e:
+        if "Message is not modified" in str(e):
+            logger.debug("Message not modified, ignoring.")
+            return None
+        raise
+    except TelegramError as e:
+        logger.debug("Edit message error: %s", e)
+        return None
 
 def extract_email_from_text(text: str) -> str:
     if not text:
@@ -421,7 +442,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "1️⃣ اضغط على /start للبدء.\n"
         "2️⃣ اختر <b>بحث عن وظيفة</b> ثم اختر الدولة.\n"
         "3️⃣ اكتب المسمى الوظيفي (مثلاً: Accountant أو مهندس).\n"
-        "4️⃣ سيقوم البوت بالبحث في Indeed, LinkedIn, Google Jobs.\n\n"
+        "4️⃣ سيقوم البوت بالبحث في Indeed, LinkedIn.\n\n"
         "<b>الميزات الجديدة:</b>\n"
         "⭐ <b>حفظ الوظائف</b> - اضغط زر ⭐ حفظ لحفظ أي وظيفة.\n"
         "🔔 <b>التنبيهات</b> - أضف تنبيه وسنرسل لك الوظائف الجديدة تلقائياً.\n"
@@ -479,7 +500,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🌍 جميع الدول", callback_data="country_all")],
             [InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="back_main")],
         ]
-        await query.edit_message_text(
+        await safe_edit_message(query,
             "🔍 <b>اختر الدولة للبحث:</b>",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(keyboard),
@@ -488,7 +509,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "categories":
         keyboard = [[InlineKeyboardButton(c["name"], callback_data=f"cat_{k}")] for k, c in JOB_CATEGORIES.items()]
         keyboard.append([InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="back_main")])
-        await query.edit_message_text(
+        await safe_edit_message(query,
             "📂 <b>اختر تصنيف الوظائف:</b>",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(keyboard),
@@ -497,7 +518,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("country_"):
         country_code = data.replace("country_", "")
         context.user_data["country"] = country_code
-        await query.edit_message_text(
+        await safe_edit_message(query,
             "✍️ <b>أرسل الآن المسمى الوظيفي الذي تبحث عنه:</b>\n(مثال: مهندس، محاسبة، Sales، Developer)",
             parse_mode=ParseMode.HTML,
         )
@@ -508,7 +529,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await perform_search(query, context, search_term, "all", is_callback=True)
 
     elif data == "back_main":
-        await query.edit_message_text(
+        await safe_edit_message(query,
             "👋 أهلاً بك في بوت <b>LinkedIt By Abdulrahman</b>\n\nاختر من القائمة أدناه للبدء:",
             parse_mode=ParseMode.HTML,
             reply_markup=_build_main_menu_keyboard(),
@@ -563,7 +584,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer(f"⚠️ وصلت للحد الأقصى ({MAX_ALERTS} تنبيهات). احذف تنبيهاً أولاً.", show_alert=True)
         else:
             context.user_data["awaiting_alert_keyword"] = True
-            await query.edit_message_text(
+            await safe_edit_message(query,
                 "🔔 <b>إضافة تنبيه جديد</b>\n\n"
                 "أرسل الكلمة المفتاحية التي تريد تلقي تنبيهات عنها:\n"
                 "(مثال: accountant, مهندس, developer, sales)",
@@ -584,14 +605,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if keyword:
             alert_id = db.add_alert(user_id, keyword, country_code)
             if alert_id == -1:
-                await query.edit_message_text(
+                await safe_edit_message(query,
                     "ℹ️ هذا التنبيه موجود مسبقاً.",
                     parse_mode=ParseMode.HTML,
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="my_alerts")]]),
                 )
             else:
                 country_name = "جميع الدول" if country_code == "all" else COUNTRIES.get(country_code, {}).get("name", country_code)
-                await query.edit_message_text(
+                await safe_edit_message(query,
                     f"✅ <b>تم إضافة التنبيه بنجاح!</b>\n\n"
                     f"🔑 الكلمة المفتاحية: <b>{escape_html(keyword)}</b>\n"
                     f"🌍 الدولة: <b>{country_name}</b>\n\n"
@@ -616,7 +637,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             check = "✅" if code in current else "⬜"
             keyboard.append([InlineKeyboardButton(f"{check} {info['name']}", callback_data=f"togglecountry_{code}")])
         keyboard.append([InlineKeyboardButton("💾 حفظ", callback_data="my_profile")])
-        await query.edit_message_text(
+        await safe_edit_message(query,
             "🌍 <b>اختر الدول المفضلة:</b>\n(اضغط لتفعيل/إلغاء)",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(keyboard),
@@ -637,7 +658,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             check = "✅" if code in current else "⬜"
             keyboard.append([InlineKeyboardButton(f"{check} {info['name']}", callback_data=f"togglecountry_{code}")])
         keyboard.append([InlineKeyboardButton("💾 حفظ", callback_data="my_profile")])
-        await query.edit_message_text(
+        await safe_edit_message(query,
             "🌍 <b>اختر الدول المفضلة:</b>\n(اضغط لتفعيل/إلغاء)",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(keyboard),
@@ -648,7 +669,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prefs = db.get_user_preferences(user_id)
         current = prefs.get("preferred_keywords", [])
         current_text = "، ".join(current) if current else "لا يوجد"
-        await query.edit_message_text(
+        await safe_edit_message(query,
             f"🔑 <b>الكلمات المفتاحية المفضلة</b>\n\n"
             f"الحالية: <b>{escape_html(current_text)}</b>\n\n"
             "أرسل كلماتك المفتاحية مفصولة بفاصلة:\n"
@@ -685,7 +706,7 @@ async def show_favorites(query, user_id: int):
     """Show user's saved favorites."""
     favs = db.get_favorites(user_id)
     if not favs:
-        await query.edit_message_text(
+        await safe_edit_message(query,
             "⭐ <b>المفضلة فارغة</b>\n\n"
             "لم تحفظ أي وظائف بعد.\n"
             "ابحث عن وظيفة واضغط زر ⭐ حفظ لإضافتها هنا.",
@@ -712,7 +733,7 @@ async def show_favorites(query, user_id: int):
 
     keyboard.append([InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="back_main")])
 
-    await query.edit_message_text(
+    await safe_edit_message(query,
         text,
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(keyboard),
@@ -763,7 +784,7 @@ async def show_favorite_detail(query, user_id: int, fav_id: int):
         InlineKeyboardButton("🔙 رجوع", callback_data="my_favorites"),
     ])
 
-    await query.edit_message_text(
+    await safe_edit_message(query,
         text,
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(keyboard),
@@ -799,7 +820,7 @@ async def show_alerts(query, user_id: int):
         keyboard.append([InlineKeyboardButton("➕ إضافة تنبيه جديد", callback_data="add_alert")])
     keyboard.append([InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="back_main")])
 
-    await query.edit_message_text(
+    await safe_edit_message(query,
         text,
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(keyboard),
@@ -838,7 +859,7 @@ async def show_profile(query, user_id: int):
         keyboard.append([InlineKeyboardButton("⚡ بحث سريع بتفضيلاتي", callback_data="quick_search")])
     keyboard.append([InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="back_main")])
 
-    await query.edit_message_text(
+    await safe_edit_message(query,
         text,
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(keyboard),
@@ -993,16 +1014,16 @@ async def send_page(chat_id, context, results, page, search_id):
 
 async def perform_search(update_or_query, context, search_term, country_code, is_callback=False):
     if is_callback:
-        await update_or_query.edit_message_text(
+        await safe_edit_message(update_or_query,
             f"🔍 جاري البحث عن <b>{escape_html(search_term)}</b>... يرجى الانتظار.\n"
-            f"🌐 المصادر: Indeed, LinkedIn, Google Jobs",
+            f"🌐 المصادر: Indeed, LinkedIn",
             parse_mode=ParseMode.HTML,
         )
         chat_id = update_or_query.message.chat_id
     else:
         await update_or_query.message.reply_text(
             f"🔍 جاري البحث عن <b>{escape_html(search_term)}</b>... يرجى الانتظار.\n"
-            f"🌐 المصادر: Indeed, LinkedIn, Google Jobs",
+            f"🌐 المصادر: Indeed, LinkedIn",
             parse_mode=ParseMode.HTML,
         )
         chat_id = update_or_query.message.chat_id
@@ -1166,7 +1187,7 @@ async def handle_admin_callback(query, data: str, user_id: int, context: Context
             [InlineKeyboardButton("❌ عمليات بحث بدون نتائج", callback_data="admin_zero_results")],
             [InlineKeyboardButton("📢 إرسال رسالة جماعية", callback_data="admin_broadcast")],
         ]
-        await query.edit_message_text(
+        await safe_edit_message(query,
             "🛠️ <b>لوحة تحكم المشرف</b>\n\nاختر من القائمة:",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(keyboard),
@@ -1192,7 +1213,7 @@ async def handle_admin_callback(query, data: str, user_id: int, context: Context
             f"   📨 الوظائف المرسلة (تنبيهات): <b>{stats['total_sent_jobs']}</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━"
         )
-        await query.edit_message_text(
+        await safe_edit_message(query,
             text, parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([admin_back_btn]),
         )
@@ -1208,7 +1229,7 @@ async def handle_admin_callback(query, data: str, user_id: int, context: Context
                 avg_res = int(s['avg_results']) if s['avg_results'] else 0
                 text += f"{i}. <b>{escape_html(s['search_term'])}</b>\n"
                 text += f"   🔢 {s['count']} مرة | 📊 متوسط النتائج: {avg_res}\n\n"
-        await query.edit_message_text(
+        await safe_edit_message(query,
             text, parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([admin_back_btn]),
         )
@@ -1227,7 +1248,7 @@ async def handle_admin_callback(query, data: str, user_id: int, context: Context
                 pct = round((c['count'] / total) * 100) if total > 0 else 0
                 bar = "█" * (pct // 5) + "░" * (20 - pct // 5)
                 text += f"{name}\n{bar} {pct}% ({c['count']})\n\n"
-        await query.edit_message_text(
+        await safe_edit_message(query,
             text, parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([admin_back_btn]),
         )
@@ -1243,7 +1264,7 @@ async def handle_admin_callback(query, data: str, user_id: int, context: Context
                 name = u['first_name'] or u['username'] or str(u['user_id'])
                 text += f"{i}. <b>{escape_html(name)}</b>\n"
                 text += f"   🔍 {u['search_count']} بحث | ⭐ {u['fav_count']} مفضلة | 🔔 {u['alert_count']} تنبيه\n\n"
-        await query.edit_message_text(
+        await safe_edit_message(query,
             text, parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([admin_back_btn]),
         )
@@ -1259,7 +1280,7 @@ async def handle_admin_callback(query, data: str, user_id: int, context: Context
                 name = u['first_name'] or u['username'] or str(u['user_id'])
                 date = u['created_at'][:16] if u['created_at'] else 'غير معروف'
                 text += f"{i}. <b>{escape_html(name)}</b>\n   📅 {date}\n\n"
-        await query.edit_message_text(
+        await safe_edit_message(query,
             text, parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([admin_back_btn]),
         )
@@ -1279,7 +1300,7 @@ async def handle_admin_callback(query, data: str, user_id: int, context: Context
                     f"   ⭐ مفضلة: {d['total_favorites']}\n"
                     f"   📨 تنبيهات مرسلة: {d['total_alerts_sent']}\n\n"
                 )
-        await query.edit_message_text(
+        await safe_edit_message(query,
             text, parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([admin_back_btn]),
         )
@@ -1296,7 +1317,7 @@ async def handle_admin_callback(query, data: str, user_id: int, context: Context
                 bar_len = int((h['count'] / max_count) * 15)
                 bar = "█" * bar_len + "░" * (15 - bar_len)
                 text += f"{h['hour']}:00 {bar} {h['count']}\n"
-        await query.edit_message_text(
+        await safe_edit_message(query,
             text, parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([admin_back_btn]),
         )
@@ -1313,7 +1334,7 @@ async def handle_admin_callback(query, data: str, user_id: int, context: Context
                 cc = z['country_code']
                 country = "جميع الدول" if cc == "all" else COUNTRIES.get(cc, {}).get("name", cc)
                 text += f"{i}. <b>{escape_html(z['search_term'])}</b> ({country})\n   🔢 {z['count']} مرة\n\n"
-        await query.edit_message_text(
+        await safe_edit_message(query,
             text, parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup([admin_back_btn]),
         )
@@ -1321,7 +1342,7 @@ async def handle_admin_callback(query, data: str, user_id: int, context: Context
 
     elif data == "admin_broadcast":
         context.user_data["awaiting_broadcast"] = True
-        await query.edit_message_text(
+        await safe_edit_message(query,
             "📢 <b>إرسال رسالة جماعية</b>\n\n"
             "اكتب الرسالة التي تريد إرسالها لجميع المستخدمين.\n"
             "يمكنك استخدام HTML للتنسيق.\n\n"
@@ -1350,7 +1371,7 @@ async def handle_admin_callback(query, data: str, user_id: int, context: Context
         context.user_data.pop("broadcast_message", None)
         context.user_data.pop("awaiting_broadcast", None)
 
-        await query.edit_message_text(
+        await safe_edit_message(query,
             f"✅ <b>تم إرسال الرسالة الجماعية!</b>\n\n"
             f"📨 تم الإرسال: <b>{sent}</b>\n"
             f"❌ فشل: <b>{failed}</b>\n"
@@ -1369,7 +1390,7 @@ async def handle_admin_callback(query, data: str, user_id: int, context: Context
             [InlineKeyboardButton("📊 نظرة عامة", callback_data="admin_overview")],
             [InlineKeyboardButton("🔙 لوحة التحكم", callback_data="admin_menu")],
         ]
-        await query.edit_message_text(
+        await safe_edit_message(query,
             "❌ تم إلغاء الرسالة الجماعية.",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(keyboard),
