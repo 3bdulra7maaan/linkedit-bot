@@ -362,8 +362,15 @@ def count_alerts(user_id: int) -> int:
 # ========================
 
 def log_search(user_id: int, search_term: str, country_code: str, results_count: int, source: str = "search"):
-    """Log a search for analytics."""
+    """Log a search for analytics. Auto-creates user if not exists to avoid FOREIGN KEY errors."""
     with get_db() as conn:
+        # Ensure user exists to prevent FOREIGN KEY constraint failure
+        existing = conn.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,)).fetchone()
+        if not existing:
+            conn.execute(
+                "INSERT OR IGNORE INTO users (user_id, username, first_name) VALUES (?, ?, ?)",
+                (user_id, "", ""),
+            )
         conn.execute(
             "INSERT INTO search_history (user_id, search_term, country_code, results_count, source) VALUES (?, ?, ?, ?, ?)",
             (user_id, search_term.lower().strip(), country_code, results_count, source),

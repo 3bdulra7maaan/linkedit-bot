@@ -11,6 +11,11 @@ from datetime import datetime
 from threading import Thread
 from concurrent.futures import ThreadPoolExecutor
 
+try:
+    import emoji
+except ImportError:
+    emoji = None
+
 from flask import Flask
 from jobspy import scrape_jobs
 import pandas as pd
@@ -86,6 +91,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 warnings.filterwarnings("ignore", category=FutureWarning)
+
+# Reduce noisy httpx logs (hides token from logs)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # --- Cache: 30 minutes, max 200 entries ---
 job_cache = TTLCache(maxsize=200, ttl=1800)
@@ -259,6 +268,10 @@ def format_job_message(job, country_name: str, show_save_btn: bool = True) -> tu
 
 def _search_single_country(search_term: str, cc: str) -> list:
     """Scrape jobs for a single country (runs in thread pool)."""
+    import time
+    import random
+    # Small random delay to reduce LinkedIn rate limiting (429 errors)
+    time.sleep(random.uniform(0.5, 2.0))
     try:
         jobs = scrape_jobs(
             site_name=SEARCH_SITES,
@@ -433,8 +446,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         await query.answer()
-    except BadRequest:
-        return
+    except (BadRequest, TelegramError) as e:
+        logger.debug("Callback query expired: %s", e)
+        pass  # Continue processing even if callback answer fails
 
     data = query.data
     user_id = query.from_user.id
@@ -839,6 +853,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
 
+    # Ensure user exists in DB (prevents FOREIGN KEY errors for users who skip /start)
+    db.get_or_create_user(user_id, update.effective_user.username or "", update.effective_user.first_name or "")
+
     # Handle alert keyword input
     if context.user_data.get("awaiting_alert_keyword"):
         context.user_data["awaiting_alert_keyword"] = False
@@ -906,7 +923,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Default: treat as job search
-    search_term = text
+    # Filter out non-job texts (greetings, emojis, short/long texts)
+    search_term = text.strip()
+
+    # Skip greetings and common non-job phrases
+    greetings = ["السلام عليكم", "مرحبا", "اهلا", "هلا", "صباح", "مساء", "شكرا", "الحمد", "بسم الله", "hi", "hello", "hey", "thanks"]
+    is_greeting = any(search_term.lower().startswith(g) for g in greetings)
+
+    # Skip if text is too short (< 2 chars), too long (> 60 chars), only emojis/symbols, or a greeting
+    is_only_emoji = not any(c.isalnum() for c in search_term) if search_term else True
+    is_country_name = search_term.lower() in ["قطر", "الامارات", "الإمارات", "السعودية", "البحرين", "qatar", "uae", "saudi", "bahrain"]
+
+    if len(search_term) < 2 or len(search_term) > 60 or is_greeting or is_only_emoji or is_country_name:
+        await update.message.reply_text(
+            "👋 أهلاً بك! للبحث عن وظيفة، يرجى إرسال <b>المسمى الوظيفي</b> مباشرة.\n\n"
+            "مثال: <code>Accountant</code> أو <code>مهندس</code> أو <code>Sales Manager</code>\n\n"
+            "أو اضغط /start لعرض القائمة الرئيسية.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
     country_code = context.user_data.get("country", "all")
     await perform_search(update, context, search_term, country_code)
 
