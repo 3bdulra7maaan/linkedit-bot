@@ -1,5 +1,5 @@
 """
-LinkedIt Bot v3.0 - Gulf Job Search Telegram Bot
+LinkedIt Bot v3.0 - Gulf Job Search Telegram Bot (Background Worker)
 =================================================
 Search for jobs across Gulf countries (Qatar, UAE, Saudi Arabia, Bahrain)
 using Indeed and LinkedIn as data sources.
@@ -21,12 +21,10 @@ import logging
 import time
 import random
 from datetime import datetime
-from threading import Thread
 from concurrent.futures import ThreadPoolExecutor
 from html import escape as html_escape
 from urllib.parse import quote_plus
 
-from flask import Flask
 from cachetools import TTLCache
 from jobspy import scrape_jobs
 from telegram import (
@@ -127,25 +125,6 @@ COUNTRY_NAMES = frozenset([
 # ========================
 job_cache = TTLCache(maxsize=200, ttl=CACHE_TTL)
 executor = ThreadPoolExecutor(max_workers=4)
-
-# ========================
-# Flask Health Endpoint
-# ========================
-flask_app = Flask(__name__)
-
-
-@flask_app.route("/")
-def home():
-    return "LinkedIt Bot v3.0 is running!", 200
-
-
-@flask_app.route("/health")
-def health():
-    return {"status": "healthy", "version": "3.0", "timestamp": datetime.utcnow().isoformat()}, 200
-
-
-def run_flask():
-    flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
 
 # ========================
@@ -1424,9 +1403,6 @@ def main():
 
     # Initialize database
     db.init_db()
-
-    # Start Flask health endpoint in background
-    Thread(target=run_flask, daemon=True).start()
 
     # Build application
     application = Application.builder().token(BOT_TOKEN).build()
