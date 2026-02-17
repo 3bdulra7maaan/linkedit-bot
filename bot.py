@@ -70,6 +70,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 WHATSAPP_LINK = os.environ.get("WHATSAPP_LINK", "")
 BOT_LINK = os.environ.get("BOT_LINK", "")
 CHANNEL_LINK = os.environ.get("CHANNEL_LINK", "")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))  # Admin user ID for dashboard access
 
 # Alert check interval in seconds (default: 6 hours)
 ALERT_INTERVAL = int(os.environ.get("ALERT_INTERVAL", "21600"))
@@ -443,6 +444,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "noop":
         return
+
+    # --- Admin Dashboard Callbacks ---
+    if data.startswith("admin_"):
+        handled = await handle_admin_callback(query, data, user_id, context)
+        if handled:
+            return
 
     # --- Main Menu ---
     if data == "search":
@@ -871,6 +878,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # Handle broadcast message from admin
+    if context.user_data.get("awaiting_broadcast") and _is_admin(user_id):
+        if text == "/cancel":
+            context.user_data.pop("awaiting_broadcast", None)
+            context.user_data.pop("broadcast_message", None)
+            await update.message.reply_text(
+                "❌ تم إلغاء الرسالة الجماعية.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لوحة التحكم", callback_data="admin_menu")]]),
+            )
+            return
+
+        context.user_data["broadcast_message"] = text
+        total_users = db.get_bot_stats()["total_users"]
+        await update.message.reply_text(
+            f"📢 <b>معاينة الرسالة الجماعية:</b>\n\n"
+            f"{text}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"👥 سيتم الإرسال إلى: <b>{total_users}</b> مستخدم\n\n"
+            "هل تريد الإرسال؟",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ إرسال", callback_data="admin_confirm_broadcast")],
+                [InlineKeyboardButton("❌ إلغاء", callback_data="admin_cancel_broadcast")],
+            ]),
+        )
+        return
+
     # Default: treat as job search
     search_term = text
     country_code = context.user_data.get("country", "all")
@@ -938,6 +972,18 @@ async def perform_search(update_or_query, context, search_term, country_code, is
         chat_id = update_or_query.message.chat_id
 
     results = await search_jobs_logic(search_term, country_code)
+
+    # Get user_id for tracking
+    if is_callback:
+        tracking_user_id = update_or_query.from_user.id if update_or_query.from_user else 0
+    else:
+        tracking_user_id = update_or_query.effective_user.id if update_or_query.effective_user else 0
+
+    # Log search for analytics
+    try:
+        db.log_search(tracking_user_id, search_term, country_code, len(results) if results else 0)
+    except Exception as e:
+        logger.error("Error logging search: %s", e)
 
     if not results:
         await context.bot.send_message(
@@ -1032,6 +1078,272 @@ async def check_and_send_alerts(app_context):
 
 
 # ========================
+# Admin Dashboard
+# ========================
+
+def _is_admin(user_id: int) -> bool:
+    """Check if user is admin."""
+    return ADMIN_ID != 0 and user_id == ADMIN_ID
+
+
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin dashboard - main menu."""
+    if not _is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ هذا الأمر متاح للمشرف فقط.")
+        return
+
+    keyboard = [
+        [InlineKeyboardButton("📊 نظرة عامة", callback_data="admin_overview")],
+        [InlineKeyboardButton("🔍 أكثر الوظائف بحثاً", callback_data="admin_top_searches")],
+        [InlineKeyboardButton("🌍 الدول الأكثر طلباً", callback_data="admin_top_countries")],
+        [InlineKeyboardButton("👥 المستخدمون الأنشط", callback_data="admin_active_users")],
+        [InlineKeyboardButton("🆕 أحدث المستخدمين", callback_data="admin_recent_users")],
+        [InlineKeyboardButton("📅 إحصائيات يومية", callback_data="admin_daily_stats")],
+        [InlineKeyboardButton("⏰ توزيع البحث بالساعة", callback_data="admin_hourly")],
+        [InlineKeyboardButton("❌ عمليات بحث بدون نتائج", callback_data="admin_zero_results")],
+        [InlineKeyboardButton("📢 إرسال رسالة جماعية", callback_data="admin_broadcast")],
+    ]
+    await update.message.reply_text(
+        "🛠️ <b>لوحة تحكم المشرف</b>\n\nاختر من القائمة:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+async def handle_admin_callback(query, data: str, user_id: int, context: ContextTypes.DEFAULT_TYPE):
+    """Handle all admin dashboard callbacks."""
+    if not _is_admin(user_id):
+        await query.answer("⛔ غير مصرح.", show_alert=True)
+        return True
+
+    admin_back_btn = [InlineKeyboardButton("🔙 لوحة التحكم", callback_data="admin_menu")]
+
+    if data == "admin_menu":
+        keyboard = [
+            [InlineKeyboardButton("📊 نظرة عامة", callback_data="admin_overview")],
+            [InlineKeyboardButton("🔍 أكثر الوظائف بحثاً", callback_data="admin_top_searches")],
+            [InlineKeyboardButton("🌍 الدول الأكثر طلباً", callback_data="admin_top_countries")],
+            [InlineKeyboardButton("👥 المستخدمون الأنشط", callback_data="admin_active_users")],
+            [InlineKeyboardButton("🆕 أحدث المستخدمين", callback_data="admin_recent_users")],
+            [InlineKeyboardButton("📅 إحصائيات يومية", callback_data="admin_daily_stats")],
+            [InlineKeyboardButton("⏰ توزيع البحث بالساعة", callback_data="admin_hourly")],
+            [InlineKeyboardButton("❌ عمليات بحث بدون نتائج", callback_data="admin_zero_results")],
+            [InlineKeyboardButton("📢 إرسال رسالة جماعية", callback_data="admin_broadcast")],
+        ]
+        await query.edit_message_text(
+            "🛠️ <b>لوحة تحكم المشرف</b>\n\nاختر من القائمة:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return True
+
+    elif data == "admin_overview":
+        stats = db.get_admin_overview()
+        text = (
+            "📊 <b>نظرة عامة على البوت</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "<b>👥 المستخدمون:</b>\n"
+            f"   الإجمالي: <b>{stats['total_users']}</b>\n"
+            f"   اليوم: <b>{stats['users_today']}</b>\n"
+            f"   هذا الأسبوع: <b>{stats['users_this_week']}</b>\n\n"
+            "<b>🔍 عمليات البحث:</b>\n"
+            f"   الإجمالي: <b>{stats['total_searches']}</b>\n"
+            f"   اليوم: <b>{stats['searches_today']}</b>\n"
+            f"   هذا الأسبوع: <b>{stats['searches_this_week']}</b>\n\n"
+            "<b>📋 أخرى:</b>\n"
+            f"   ⭐ المفضلة: <b>{stats['total_favorites']}</b>\n"
+            f"   🔔 التنبيهات النشطة: <b>{stats['active_alerts']}</b>\n"
+            f"   📨 الوظائف المرسلة (تنبيهات): <b>{stats['total_sent_jobs']}</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━"
+        )
+        await query.edit_message_text(
+            text, parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([admin_back_btn]),
+        )
+        return True
+
+    elif data == "admin_top_searches":
+        top = db.get_top_searches(10)
+        if not top:
+            text = "🔍 <b>أكثر الوظائف بحثاً</b>\n\nلا توجد بيانات بعد."
+        else:
+            text = "🔍 <b>أكثر 10 وظائف بحثاً:</b>\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+            for i, s in enumerate(top, 1):
+                avg_res = int(s['avg_results']) if s['avg_results'] else 0
+                text += f"{i}. <b>{escape_html(s['search_term'])}</b>\n"
+                text += f"   🔢 {s['count']} مرة | 📊 متوسط النتائج: {avg_res}\n\n"
+        await query.edit_message_text(
+            text, parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([admin_back_btn]),
+        )
+        return True
+
+    elif data == "admin_top_countries":
+        top = db.get_top_countries(10)
+        if not top:
+            text = "🌍 <b>الدول الأكثر طلباً</b>\n\nلا توجد بيانات بعد."
+        else:
+            text = "🌍 <b>الدول الأكثر طلباً:</b>\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+            total = sum(c['count'] for c in top)
+            for c in top:
+                cc = c['country_code']
+                name = "جميع الدول 🌍" if cc == "all" else COUNTRIES.get(cc, {}).get("name", cc)
+                pct = round((c['count'] / total) * 100) if total > 0 else 0
+                bar = "█" * (pct // 5) + "░" * (20 - pct // 5)
+                text += f"{name}\n{bar} {pct}% ({c['count']})\n\n"
+        await query.edit_message_text(
+            text, parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([admin_back_btn]),
+        )
+        return True
+
+    elif data == "admin_active_users":
+        users = db.get_active_users(10)
+        if not users:
+            text = "👥 <b>المستخدمون الأنشط</b>\n\nلا توجد بيانات بعد."
+        else:
+            text = "👥 <b>أنشط 10 مستخدمين:</b>\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+            for i, u in enumerate(users, 1):
+                name = u['first_name'] or u['username'] or str(u['user_id'])
+                text += f"{i}. <b>{escape_html(name)}</b>\n"
+                text += f"   🔍 {u['search_count']} بحث | ⭐ {u['fav_count']} مفضلة | 🔔 {u['alert_count']} تنبيه\n\n"
+        await query.edit_message_text(
+            text, parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([admin_back_btn]),
+        )
+        return True
+
+    elif data == "admin_recent_users":
+        users = db.get_recent_users(10)
+        if not users:
+            text = "🆕 <b>أحدث المستخدمين</b>\n\nلا توجد مستخدمين بعد."
+        else:
+            text = "🆕 <b>آخر 10 مستخدمين انضموا:</b>\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+            for i, u in enumerate(users, 1):
+                name = u['first_name'] or u['username'] or str(u['user_id'])
+                date = u['created_at'][:16] if u['created_at'] else 'غير معروف'
+                text += f"{i}. <b>{escape_html(name)}</b>\n   📅 {date}\n\n"
+        await query.edit_message_text(
+            text, parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([admin_back_btn]),
+        )
+        return True
+
+    elif data == "admin_daily_stats":
+        days = db.get_daily_stats_history(7)
+        if not days:
+            text = "📅 <b>إحصائيات يومية</b>\n\nلا توجد بيانات بعد."
+        else:
+            text = "📅 <b>إحصائيات آخر 7 أيام:</b>\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+            for d in days:
+                text += (
+                    f"📆 <b>{d['date']}</b>\n"
+                    f"   👤 مستخدمون جدد: {d['new_users']}\n"
+                    f"   🔍 عمليات بحث: {d['total_searches']}\n"
+                    f"   ⭐ مفضلة: {d['total_favorites']}\n"
+                    f"   📨 تنبيهات مرسلة: {d['total_alerts_sent']}\n\n"
+                )
+        await query.edit_message_text(
+            text, parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([admin_back_btn]),
+        )
+        return True
+
+    elif data == "admin_hourly":
+        hours = db.get_hourly_search_distribution()
+        if not hours:
+            text = "⏰ <b>توزيع البحث بالساعة</b>\n\nلا توجد بيانات بعد."
+        else:
+            text = "⏰ <b>توزيع البحث حسب الساعة (UTC):</b>\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+            max_count = max(h['count'] for h in hours) if hours else 1
+            for h in hours:
+                bar_len = int((h['count'] / max_count) * 15)
+                bar = "█" * bar_len + "░" * (15 - bar_len)
+                text += f"{h['hour']}:00 {bar} {h['count']}\n"
+        await query.edit_message_text(
+            text, parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([admin_back_btn]),
+        )
+        return True
+
+    elif data == "admin_zero_results":
+        zeros = db.get_zero_result_searches(10)
+        if not zeros:
+            text = "❌ <b>عمليات بحث بدون نتائج</b>\n\nلا توجد بيانات أو جميع عمليات البحث أعطت نتائج!"
+        else:
+            text = "❌ <b>أكثر 10 عمليات بحث بدون نتائج:</b>\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+            text += "<i>هذه الكلمات يبحث عنها المستخدمون ولا يجدون نتائج. يمكنك تحسين البوت بناءً عليها.</i>\n\n"
+            for i, z in enumerate(zeros, 1):
+                cc = z['country_code']
+                country = "جميع الدول" if cc == "all" else COUNTRIES.get(cc, {}).get("name", cc)
+                text += f"{i}. <b>{escape_html(z['search_term'])}</b> ({country})\n   🔢 {z['count']} مرة\n\n"
+        await query.edit_message_text(
+            text, parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([admin_back_btn]),
+        )
+        return True
+
+    elif data == "admin_broadcast":
+        context.user_data["awaiting_broadcast"] = True
+        await query.edit_message_text(
+            "📢 <b>إرسال رسالة جماعية</b>\n\n"
+            "اكتب الرسالة التي تريد إرسالها لجميع المستخدمين.\n"
+            "يمكنك استخدام HTML للتنسيق.\n\n"
+            "أرسل /cancel للإلغاء.",
+            parse_mode=ParseMode.HTML,
+        )
+        return True
+
+    elif data.startswith("admin_confirm_broadcast"):
+        msg_text = context.user_data.get("broadcast_message", "")
+        if not msg_text:
+            await query.answer("⚠️ لا توجد رسالة للإرسال.", show_alert=True)
+            return True
+
+        user_ids = db.broadcast_get_all_user_ids()
+        sent = 0
+        failed = 0
+        for uid in user_ids:
+            try:
+                await context.bot.send_message(uid, msg_text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+                sent += 1
+                await asyncio.sleep(0.1)  # Rate limiting
+            except TelegramError:
+                failed += 1
+
+        context.user_data.pop("broadcast_message", None)
+        context.user_data.pop("awaiting_broadcast", None)
+
+        await query.edit_message_text(
+            f"✅ <b>تم إرسال الرسالة الجماعية!</b>\n\n"
+            f"📨 تم الإرسال: <b>{sent}</b>\n"
+            f"❌ فشل: <b>{failed}</b>\n"
+            f"👥 الإجمالي: <b>{len(user_ids)}</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 لوحة التحكم", callback_data="admin_menu")]]),
+        )
+        return True
+
+    elif data == "admin_cancel_broadcast":
+        context.user_data.pop("broadcast_message", None)
+        context.user_data.pop("awaiting_broadcast", None)
+        await query.answer("تم الإلغاء.")
+        # Return to admin menu
+        keyboard = [
+            [InlineKeyboardButton("📊 نظرة عامة", callback_data="admin_overview")],
+            [InlineKeyboardButton("🔙 لوحة التحكم", callback_data="admin_menu")],
+        ]
+        await query.edit_message_text(
+            "❌ تم إلغاء الرسالة الجماعية.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return True
+
+    return False
+
+
+# ========================
 # Error Handler
 # ========================
 
@@ -1060,6 +1372,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("search", search_command))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
@@ -1079,7 +1392,7 @@ def main():
     else:
         logger.warning("Job queue not available. Alerts will not be sent automatically.")
 
-    logger.info("Bot started (Phase 1 - Full Features)...")
+    logger.info("Bot started (Phase 2 - Admin Dashboard + Analytics)...")
 
     application.run_polling(drop_pending_updates=True)
 
