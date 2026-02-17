@@ -156,7 +156,7 @@ async def safe_edit_message(query, text: str, parse_mode=None, reply_markup=None
             kwargs["reply_markup"] = reply_markup
         if disable_web_page_preview:
             kwargs["disable_web_page_preview"] = disable_web_page_preview
-        return await safe_edit_message(query,**kwargs)
+        return await query.edit_message_text(**kwargs)
     except BadRequest as e:
         if "Message is not modified" in str(e):
             logger.debug("Message not modified, ignoring.")
